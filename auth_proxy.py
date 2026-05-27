@@ -23,6 +23,15 @@ SECRET = secrets.token_bytes(32)
 COOKIE = "hermes_auth"
 MAX_AGE = 7 * 86400
 
+_STATIC_EXTENSIONS = {
+    ".ico", ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot", ".map", ".webp", ".avif",
+}
+
+def _is_static_asset(path):
+    ext = os.path.splitext(path)[1].lower()
+    return ext in _STATIC_EXTENSIONS
+
 if not PASSWORD:
     print("ERROR: DASHBOARD_PASSWORD must be set.", file=sys.stderr)
     sys.exit(1)
@@ -95,7 +104,7 @@ async def auth_middleware(request, handler):
 
     token = request.cookies.get(COOKIE)
     if not token or not check_token(token):
-        if request.path.startswith("/api/"):
+        if request.path.startswith("/api/") or _is_static_asset(request.path):
             raise web.HTTPUnauthorized()
         # Remember where the user was trying to go so we can send them back after login.
         # Encode it in a short-lived cookie rather than a query param.
