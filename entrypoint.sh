@@ -15,15 +15,35 @@ if [ "$AUTO_UPDATE" = "true" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Supervised restart loop for a background service.
+# Usage:  supervise <label> <command...>
+# Restarts the command on crash with exponential backoff (max 30s).
+# ---------------------------------------------------------------------------
+supervise() {
+  local label="$1"; shift
+  local delay=1
+  while true; do
+    echo "[supervisor] Starting $label ..."
+    "$@" &
+    local pid=$!
+    wait "$pid" || true
+    echo "[supervisor] $label (pid $pid) exited, restarting in ${delay}s ..."
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+    if [ "$delay" -gt 30 ]; then delay=30; fi
+  done
+}
+
 if [ "$LITE_MODE" = "true" ]; then
   echo "Starting in LITE_MODE (no web UI)..."
 
-  hermes dashboard --host 127.0.0.1 --port 9119 --no-open &
+  supervise "hermes-dashboard" hermes dashboard --host 127.0.0.1 --port 9119 --no-open &
   exec python /auth_proxy.py
 else
-  hermes dashboard --host 127.0.0.1 --port 9119 --no-open &
+  supervise "hermes-dashboard" hermes dashboard --host 127.0.0.1 --port 9119 --no-open &
 
-  cd /opt/hermes-agent && HERMES_WEBUI_PORT=8787 venv/bin/python /opt/hermes-webui/server.py &
+  cd /opt/hermes-agent && HERMES_WEBUI_PORT=8787 supervise "hermes-webui" venv/bin/python /opt/hermes-webui/server.py &
 
   exec python /auth_proxy.py
 fi

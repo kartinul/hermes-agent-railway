@@ -10,16 +10,28 @@ body { background: #0a0f14; color: #e0f0f0; font-family: sans-serif; display: fl
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 h2 { font-weight: 500; letter-spacing: 0.05em; margin: 0; }
 p { color: #7899aa; margin-top: 8px; font-size: 0.9em; }
+#elapsed { color: #556677; margin-top: 12px; font-size: 0.8em; }
 </style>
 </head>
 <body>
 <div class="loader"></div>
 <h2>Loading Hermes</h2>
 <p>Starting up... this may take a few seconds.</p>
+<div id="elapsed"></div>
 <script>
-    setTimeout(function() {
-        window.location.reload(true);
-    }, 2000);
+    var start = Date.now();
+    var attempt = 0;
+    function refresh() {
+        attempt++;
+        // Exponential backoff: 3s, 4s, 5s, ... capped at 10s
+        var delay = Math.min(3000 + attempt * 1000, 10000);
+        var secs = Math.round((Date.now() - start) / 1000);
+        document.getElementById('elapsed').textContent = 'Waiting ' + secs + 's (attempt ' + attempt + ')';
+        setTimeout(function() {
+            window.location.reload(true);
+        }, delay);
+    }
+    refresh();
 </script>
 </body>
 </html>
