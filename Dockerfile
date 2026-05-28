@@ -29,6 +29,14 @@ RUN uv venv venv --python 3.11 \
 
 ENV PATH="/opt/hermes-agent/venv/bin:$PATH"
 
+# Pre-build the dashboard web UI at image-build time so `hermes dashboard`
+# skips the Vite build at runtime.  The runtime build OOM-kills on Railway's
+# limited container memory.  Output goes to hermes_cli/web_dist/ per the
+# project's vite.config.ts.
+RUN cd /opt/hermes-agent/web \
+    && npm ci --silent \
+    && npm run build
+
 RUN mkdir -p /root/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache} \
     && cp cli-config.yaml.example /root/.hermes/config.yaml \
     && touch /root/.hermes/.env
