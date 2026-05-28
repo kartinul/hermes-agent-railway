@@ -30,12 +30,17 @@ RUN uv venv venv --python 3.11 \
 ENV PATH="/opt/hermes-agent/venv/bin:$PATH"
 
 # Pre-build the dashboard web UI at image-build time so `hermes dashboard`
-# skips the Vite build at runtime.  The runtime build OOM-kills on Railway's
-# limited container memory.  Output goes to hermes_cli/web_dist/ per the
-# project's vite.config.ts.
+# skips the Vite build at runtime (the runtime build OOM-kills on Railway).
+# Clean up node_modules afterwards — only needed for building, not serving.
 RUN cd /opt/hermes-agent/web \
     && npm ci --silent \
-    && npm run build
+    && npm run build \
+    && rm -rf node_modules
+
+# Pre-install WhatsApp bridge dependencies so `hermes gateway run` doesn't
+# run `npm install` at runtime (which also OOM-kills).
+RUN cd /opt/hermes-agent/scripts/whatsapp-bridge \
+    && npm install --no-fund --no-audit --progress=false
 
 RUN mkdir -p /root/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache} \
     && cp cli-config.yaml.example /root/.hermes/config.yaml \

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
+# Create 512MB swap as a safety net — if a process briefly spikes past the
+# RAM limit it slows down instead of getting OOM-killed.
+if [ ! -f /swapfile ]; then
+  fallocate -l 512M /swapfile && chmod 600 /swapfile \
+    && mkswap /swapfile && swapon /swapfile 2>/dev/null \
+    && echo "Swap enabled (512MB)" \
+    || echo "Swap setup skipped (not supported)"
+fi
+
 AUTO_UPDATE="${AUTO_UPDATE:-true}"
 
 if [ "$AUTO_UPDATE" = "true" ]; then
