@@ -69,6 +69,7 @@ curl https://your-app.up.railway.app/hapi/v1/models \
 curl https://your-app.up.railway.app/hapi/v1/chat/completions \
   -H "Authorization: Bearer <DASHB...  -H "Content-Type: application/json" \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
+
 ```
 
 ### API Server Env Vars
