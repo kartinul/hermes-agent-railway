@@ -99,7 +99,7 @@ def _safe_next_path(path):
 
 @web.middleware
 async def auth_middleware(request, handler):
-    if request.path in ("/login", "/logout", "/api/health") or request.path.startswith("/webhooks/") or request.path.startswith("/hapi/"):
+    if request.path in ("/login", "/logout", "/api/health"):
         return await handler(request)
 
     token = request.cookies.get(COOKIE)
@@ -120,7 +120,6 @@ async def auth_middleware(request, handler):
 
 
 gateway_process = None
-webhook_proxy_process = None
 
 
 def start_gateway():
@@ -132,19 +131,6 @@ def start_gateway():
         except subprocess.TimeoutExpired:
             gateway_process.kill()
     gateway_process = subprocess.Popen(["hermes", "gateway", "run"])
-
-
-def start_webhook_proxy():
-    global webhook_proxy_process
-    if webhook_proxy_process and webhook_proxy_process.poll() is None:
-        webhook_proxy_process.terminate()
-        try:
-            webhook_proxy_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            webhook_proxy_process.kill()
-    webhook_proxy_process = subprocess.Popen([
-        "python3", "/root/.hermes/scripts/webhook_filter_proxy.py"
-    ])
 
 
 RESTART_PATHS = {
@@ -164,48 +150,15 @@ async def restart_gateway(request):
 
 
 async def gateway_status(request):
-    gw_running = gateway_process is not None and gateway_process.poll() is None
-    wp_running = webhook_proxy_process is not None and webhook_proxy_process.poll() is None
+    running = gateway_process is not None and gateway_process.poll() is None
     return web.json_response({
-        "running": gw_running,
-        "webhook_proxy_running": wp_running,
+        "running": running,
         "volume": volume_attached(),
     })
 
 
 async def health(request):
     return web.json_response({"status": "ok"})
-
-
-# ---------------------------------------------------------------------------
-# Webhook filter proxy forwarding
-# ---------------------------------------------------------------------------
-
-WEBHOOK_PROXY_URL = "http://127.0.0.1:8645"
-API_SERVER_UPSTREAM = "http://127.0.0.1:8642"
-API_SERVER_KEY = os.environ.get("API_SERVER_KEY", "")
-
-
-async def webhook_proxy(request):
-    """Forward webhook requests to the filter proxy on port 8645."""
-    raw_body = await request.read()
-    headers = {
-        "Content-Type": "application/json",
-        "X-GitHub-Event": request.headers.get("X-GitHub-Event", ""),
-        "X-Hub-Signature-256": request.headers.get("X-Hub-Signature-256", ""),
-        "X-GitHub-Delivery": request.headers.get("X-GitHub-Delivery", ""),
-    }
-    # Preserve original path (e.g. /webhooks/pr-review-comments)
-    target_url = f"{WEBHOOK_PROXY_URL}{request.path}"
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.post(target_url, data=raw_body, headers=headers) as resp:
-                body = await resp.read()
-                return web.Response(status=resp.status, body=body, content_type="application/json")
-    except Exception as e:
-        return web.json_response({"error": f"Webhook proxy forward failed: {e}"}, status=502)
 
 
 # ---------------------------------------------------------------------------
@@ -279,10 +232,6 @@ async def _proxy_http(request, upstream_base, inject_widget=False, restart_check
 # ---------------------------------------------------------------------------
 
 async def proxy(request):
-    # API server proxy: /hapi/v1/* -> API server on :8642
-    if request.path.startswith("/hapi/"):
-        return await api_server_proxy(request)
-    
     if request.headers.get("Upgrade", "").lower() == "websocket":
         url = f"ws://127.0.0.1:9119{request.path_qs}"
         return await _proxy_ws(request, url)
@@ -385,77 +334,8 @@ async def webui_proxy(request):
 # App wiring
 # ---------------------------------------------------------------------------
 
-async def api_server_proxy(request):
-    """Proxy /hapi/v1/* to the API server on port 8642.
-    
-    Auth: requires the dashboard password as a Bearer token in the Authorization header
-    (same password used for the dashboard login). The proxy then injects the real
-    API_SERVER_KEY when forwarding to the API server.
-    """
-    # Check auth: client must send "Authorization: Bearer <DASHBOARD_PASSWORD>"
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise web.HTTPUnauthorized(text="Missing or invalid Authorization header")
-    
-    provided_password = auth_header[7:]  # strip "Bearer "
-    if not hmac.compare_digest(provided_password, PASSWORD):
-        raise web.HTTPUnauthorized(text="Invalid password")
-    
-    # Forward to API server with the real API server key
-    upstream_path = request.path_qs
-    if upstream_path.startswith("/hapi/v1"):
-        upstream_path = upstream_path[len("/hapi/v1"):]  # strip /hapi/v1 prefix
-    if not upstream_path:
-        upstream_path = "/"
-    
-    url = f"{API_SERVER_UPSTREAM}{upstream_path}"
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "transfer-encoding", "authorization")}
-    headers["Authorization"] = f"Bearer {API_SERVER_KEY}"
-    
-    body = await request.read()
-    try:
-        timeout = aiohttp.ClientTimeout(total=300)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.request(
-                request.method,
-                url,
-                headers=headers,
-                data=body,
-                allow_redirects=False,
-            ) as resp:
-                excluded = {"transfer-encoding", "content-encoding", "content-length"}
-                proxy_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
-                content = await resp.read()
-                
-                content_type = resp.headers.get("content-type", "")
-                if "text/event-stream" in content_type:
-                    streaming_resp = web.StreamResponse(status=resp.status)
-                    streaming_resp.content_type = "text/event-stream"
-                    streaming_resp.headers["Cache-Control"] = "no-cache"
-                    streaming_resp.headers["X-Accel-Buffering"] = "no"
-                    streaming_resp.headers["Connection"] = "close"
-                    excluded_h = {"transfer-encoding", "content-encoding", "content-length",
-                                  "content-type", "cache-control", "connection"}
-                    for k, v in resp.headers.items():
-                        if k.lower() not in excluded_h:
-                            streaming_resp.headers[k] = v
-                    await streaming_resp.prepare(request)
-                    try:
-                        async for chunk in resp.content.iter_any():
-                            await streaming_resp.write(chunk)
-                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-                        pass
-                    await streaming_resp.write_eof()
-                    return streaming_resp
-                
-                return web.Response(status=resp.status, headers=proxy_headers, body=content)
-    except aiohttp.ClientConnectorError:
-        return web.json_response({"error": "API server is unreachable"}, status=502)
-
-
 async def on_startup(app):
     start_gateway()
-    start_webhook_proxy()
 
 
 def create_app():
@@ -476,9 +356,6 @@ def create_app():
     app.router.add_get("/webui", lambda r: web.HTTPMovedPermanently("/webui/"))
     app.router.add_route("*", "/webui/", webui_proxy)
     app.router.add_route("*", "/webui/{path_info:.*}", webui_proxy)
-
-    # Webhook filter proxy — forwards to filter proxy on port 8645
-    app.router.add_route("*", "/webhooks/{path_info:.*}", webhook_proxy)
 
     # Dashboard catch-all
     app.router.add_route("*", "/{path_info:.*}", proxy)
